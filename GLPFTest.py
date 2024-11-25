@@ -17,34 +17,31 @@ __all__ = [
 ]
 
 
-def mask_radial(img, D0, n):
-    # Get the dimensions of the input image
+def mask_radial(img, D0):
+    # Extract dimensions from the input image tensor 'img'
     bs, ch, M, N = img.shape[0], img.shape[1], img.shape[2], img.shape[3]
-    # Initialize the filter H
+    # Initialize an array to store the filter H
     H = np.zeros((bs, ch, M, N))
-    # Get the number of rows and columns in the input image
-    rows, columns = img.shape[2], img.shape[3]
-    # Calculate the midpoint of rows and columns
-    mid_R, mid_C = int(rows / 2), int(columns / 2)
-    for i in range(rows):
-        for j in range(columns):
-            d = np.sqrt((i - mid_R) ** 2 + (j - mid_C) ** 2)
-            H[:, :, i, j] = 1 / (1 + (d / D0) ** (2 * n))
+    # Iterate over the spatial domain to compute the filter
+    for u in range(M):
+        for w in range(N):
+            # Calculate the distance D from the center of the image
+            D = np.sqrt((u - (M / 2)) ** 2 + (w - (N / 2)) ** 2)
+            H[:, :, u, w] = np.exp(-(D * D) / (2 * D0 * D0))
     return H
 
 
-def convertFreqImage(img):  # Convert Frequency Domain
-    bs, c, M, N = img.shape[0], img.shape[1], img.shape[2], img.shape[3]
-    # Gray(35) and Color(25)
+def convertFreqImage(img):
+    # Convert the input image tensor 'img' to a numpy array
+    x = img.to('cpu').detach().numpy().copy()
+    bs, c, M, N = x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+    # Color (25) and Gray (35)
     r = 128
-    n = 1
-    H = mask_radial(np.zeros([bs, c, M, N]), r, n)
-    # Apply inverse Fourier Transform to obtain spatial domain representation
-    H = np.real(np.fft.ifft2(H))
+    H = mask_radial(np.zeros([bs, c, M, N]), r)
+    H = np.real(np.fft.ifft2(H)) # to Spatial Domain Image
     TS = torch.Tensor(H)
     TS = TS.to('cuda')
-    # Concatenate the noisy image and the spatial domain filtered image
-    s = torch.cat((img, TS), 1)
+    s = torch.cat((img, TS), 1) # Concat noisy image and filtered image together
     return s
 
 
@@ -54,7 +51,7 @@ def test(config, test_dataloader, test_model):
     for i, (img, _, name) in enumerate(test_dataloader):
         with torch.no_grad():
             img = img.to(config.device)
-            imgIR = convertFreqImage(img)  # Concat with noisy image and filtered image
+            imgIR = convertFreqImage(img)
             generate_img = test_model(imgIR)
             torchvision.utils.save_image(generate_img, config.output_images_path + name[0])
 
@@ -64,44 +61,39 @@ def setup(config):
         config.device = "cuda"
     else:
         config.device = "cpu"
+
     model = torch.load(config.snapshot_path).to(config.device)
-    # Define the transformation for resizing images and converting them to tensors
     transform = transforms.Compose([transforms.Resize((config.resize, config.resize)), transforms.ToTensor()])
-    # Create the test dataset using UWNetDataSet with test images path
     test_dataset = UWNetDataSet(config.test_images_path, None, transform, False)
-    # Create a dataloader for the test dataset
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
     print("Test Dataset Reading Completed.")
     return test_dataloader, model
 
 
 def testing(config):
-    # Setup the testing dataset and load the model
     ds_test, model = setup(config)
-    # Perform testing using the configured settings, testing dataset, and model
     test(config, ds_test, model)
     print(model)
-    # Calculate the total number of trainable parameters in the model
     pytorch_total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of Trainable Parameters", pytorch_total_params)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--snapshot_path', type=str, default='./IR_BLPF'
+    parser.add_argument('--snapshot_path', type=str, default='./IR_GLPF'
                                                              '/model_epoch_48.ckpt',
                         help='snapshot path,such as :xxx/snapshots/model.ckpt default:None')
-    parser.add_argument('--test_images_path', type=str, default="./data/UIEB/input/",
+    parser.add_argument('--test_images_path', type=str, default="./data/EU_Dark/input/",
                         help='path of input images(underwater images) for te8ting default:./data/input/')
     parser.add_argument('--output_images_path', type=str,
-                        default='./ProposedBLPF/UIEB/',
+                        default='./ProposedGLPF/EU_Dark/',
                         help='path to save generated image.')
     parser.add_argument('--batch_size', type=int, default=1, help="default : 1")
     parser.add_argument('--resize', type=int, default=256, help="resize images, default:resize images to 256*256")
 
     parser.add_argument('--calculate_metrics', type=bool, default=True,
                         help="calculate PSNR, SSIM and UIQM on test images")
-    parser.add_argument('--label_images_path', type=str, default="./data/UIEB/label/",
+    parser.add_argument('--label_images_path', type=str, default="./data/EU_Dark/label/",
                         help='path of label images(clear images) default:./data/laEUP-Dbel/')
 
     print("-------------------testing---------------------")
@@ -141,4 +133,3 @@ if __name__ == '__main__':
                                                      np.round(np.std(UIQM_measures), 3)))
         print("UCIQE on {0} samples {1} ± {2}".format(len(UCIQE_measures), np.round(np.mean(UCIQE_measures), 3),
                                                       np.round(np.std(UCIQE_measures), 3)))
-

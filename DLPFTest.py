@@ -1,5 +1,3 @@
-import torch
-import numpy as np
 import torchvision
 from torchvision import transforms
 import argparse
@@ -17,33 +15,31 @@ __all__ = [
 ]
 
 
-def mask_radial(img, D0, n):
-    # Get the dimensions of the input image
-    bs, ch, M, N = img.shape[0], img.shape[1], img.shape[2], img.shape[3]
-    # Initialize the filter H
-    H = np.zeros((bs, ch, M, N))
-    # Get the number of rows and columns in the input image
-    rows, columns = img.shape[2], img.shape[3]
-    # Calculate the midpoint of rows and columns
-    mid_R, mid_C = int(rows / 2), int(columns / 2)
+def distance(i, j, imageSize, r):
+    dis = np.sqrt((i - imageSize / 2) ** 2 + (j - imageSize / 2) ** 2)
+    if dis <= r:
+        return 1.0
+    else:
+        return 0
+
+
+def mask_radial(img, r):
+    bs, ch, rows, cols = img.shape[0], img.shape[1], img.shape[2], img.shape[3]
+    mask = np.zeros((bs, ch, rows, cols))
     for i in range(rows):
-        for j in range(columns):
-            d = np.sqrt((i - mid_R) ** 2 + (j - mid_C) ** 2)
-            H[:, :, i, j] = 1 / (1 + (d / D0) ** (2 * n))
-    return H
+        for j in range(cols):
+            mask[:, :, i, j] = distance(i, j, imageSize=rows, r=r)
+    return mask
 
 
 def convertFreqImage(img):  # Convert Frequency Domain
-    bs, c, M, N = img.shape[0], img.shape[1], img.shape[2], img.shape[3]
-    # Gray(35) and Color(25)
+    x = img.to('cpu').detach().numpy().copy()
+    bs, c, M, N = x.shape[0], x.shape[1], x.shape[2], x.shape[3]
     r = 128
-    n = 1
-    H = mask_radial(np.zeros([bs, c, M, N]), r, n)
-    # Apply inverse Fourier Transform to obtain spatial domain representation
-    H = np.real(np.fft.ifft2(H))
+    H = mask_radial(np.zeros([bs, c, M, N]), r)
+    H = np.fft.ifft2(H)
     TS = torch.Tensor(H)
     TS = TS.to('cuda')
-    # Concatenate the noisy image and the spatial domain filtered image
     s = torch.cat((img, TS), 1)
     return s
 
@@ -54,7 +50,7 @@ def test(config, test_dataloader, test_model):
     for i, (img, _, name) in enumerate(test_dataloader):
         with torch.no_grad():
             img = img.to(config.device)
-            imgIR = convertFreqImage(img)  # Concat with noisy image and filtered image
+            imgIR = convertFreqImage(img)
             generate_img = test_model(imgIR)
             torchvision.utils.save_image(generate_img, config.output_images_path + name[0])
 
@@ -64,45 +60,39 @@ def setup(config):
         config.device = "cuda"
     else:
         config.device = "cpu"
+
     model = torch.load(config.snapshot_path).to(config.device)
-    # Define the transformation for resizing images and converting them to tensors
     transform = transforms.Compose([transforms.Resize((config.resize, config.resize)), transforms.ToTensor()])
-    # Create the test dataset using UWNetDataSet with test images path
     test_dataset = UWNetDataSet(config.test_images_path, None, transform, False)
-    # Create a dataloader for the test dataset
     test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
     print("Test Dataset Reading Completed.")
     return test_dataloader, model
 
 
 def testing(config):
-    # Setup the testing dataset and load the model
     ds_test, model = setup(config)
-    # Perform testing using the configured settings, testing dataset, and model
     test(config, ds_test, model)
     print(model)
-    # Calculate the total number of trainable parameters in the model
     pytorch_total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of Trainable Parameters", pytorch_total_params)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--snapshot_path', type=str, default='./IR_BLPF'
+    parser.add_argument('--snapshot_path', type=str, default='./IR_DLPF'
                                                              '/model_epoch_48.ckpt',
                         help='snapshot path,such as :xxx/snapshots/model.ckpt default:None')
-    parser.add_argument('--test_images_path', type=str, default="./data/UIEB/input/",
+    parser.add_argument('--test_images_path', type=str, default="./data/OceanDark/",
                         help='path of input images(underwater images) for te8ting default:./data/input/')
     parser.add_argument('--output_images_path', type=str,
-                        default='./ProposedBLPF/UIEB/',
+                        default='./ProposedDLPF/OceanDark/',
                         help='path to save generated image.')
     parser.add_argument('--batch_size', type=int, default=1, help="default : 1")
     parser.add_argument('--resize', type=int, default=256, help="resize images, default:resize images to 256*256")
-
     parser.add_argument('--calculate_metrics', type=bool, default=True,
                         help="calculate PSNR, SSIM and UIQM on test images")
-    parser.add_argument('--label_images_path', type=str, default="./data/UIEB/label/",
-                        help='path of label images(clear images) default:./data/laEUP-Dbel/')
+    parser.add_argument('--label_images_path', type=str, default="./data/EU_Dark/label/",
+                        help='path of label images(clear images) default:../data/UFO/labelaEUP-Dbel/')
 
     print("-------------------testing---------------------")
     config = parser.parse_args()
@@ -116,29 +106,28 @@ if __name__ == '__main__':
 
     if config.calculate_metrics:
         print("-------------------calculating performance metrics---------------------")
-        RMSE_measures, SSIM_measures, MSSSIM_measures, SCC_measures, \
-        VIF_measures, PSNR_measures, PSNRB_measures = calculate_metrics(
-            config.output_images_path, config.label_images_path,
-            (config.resize, config.resize))
+        # RMSE_measures, SSIM_measures, MSSSIM_measures, SCC_measures, \
+        # VIF_measures, PSNR_measures, PSNRB_measures = calculate_metrics(
+        #     config.output_images_path, config.label_images_path,
+        #     (config.resize, config.resize))
         UIQM_measures = calculate_UIQM(config.output_images_path, (config.resize, config.resize))
         UCIQE_measures = calculate_UCIQE(config.output_images_path, (config.resize, config.resize))
-        print("RMSE on {0} samples {1} ± {2}".format(len(RMSE_measures), np.round(np.mean(RMSE_measures), 3),
-                                                     np.round(np.std(RMSE_measures), 3)))
-        print("PSNR on {0} samples {1} ± {2}".format(len(PSNR_measures), np.round(np.mean(PSNR_measures), 3),
-                                                     np.round(np.std(PSNR_measures), 3)))
-        print("PSNR_B on {0} samples {1} ± {2}".format(len(PSNRB_measures), np.round(np.mean(PSNRB_measures), 3),
-                                                       np.round(np.std(PSNRB_measures), 3)))
-        print("SSIM on {0} samples {1} ± {2}".format(len(SSIM_measures), np.round(np.mean(SSIM_measures), 3),
-                                                     np.round(np.std(SSIM_measures), 3)))
-        print("MS_SSIM on {0} samples {1} ± {2}".format(len(MSSSIM_measures), np.round(np.mean(MSSSIM_measures), 3),
-                                                        np.round(np.std(MSSSIM_measures), 3)))
-        print("SCC on {0} samples {1} ± {2}".format(len(SCC_measures), np.round(np.mean(SCC_measures), 3),
-                                                    np.round(np.std(SCC_measures), 3)))
-
-        print("VIF on {0} samples {1} ± {2}".format(len(VIF_measures), np.round(np.mean(VIF_measures), 3),
-                                                    np.round(np.std(VIF_measures), 3)))
+        # print("RMSE on {0} samples {1} ± {2}".format(len(RMSE_measures), np.round(np.mean(RMSE_measures), 3),
+        #                                              np.round(np.std(RMSE_measures), 3)))
+        # print("PSNR on {0} samples {1} ± {2}".format(len(PSNR_measures), np.round(np.mean(PSNR_measures), 3),
+        #                                              np.round(np.std(PSNR_measures), 3)))
+        # print("PSNR_B on {0} samples {1} ± {2}".format(len(PSNRB_measures), np.round(np.mean(PSNRB_measures), 3),
+        #                                                np.round(np.std(PSNRB_measures), 3)))
+        # print("SSIM on {0} samples {1} ± {2}".format(len(SSIM_measures), np.round(np.mean(SSIM_measures), 3),
+        #                                              np.round(np.std(SSIM_measures), 3)))
+        # print("MS_SSIM on {0} samples {1} ± {2}".format(len(MSSSIM_measures), np.round(np.mean(MSSSIM_measures), 3),
+        #                                                 np.round(np.std(MSSSIM_measures), 3)))
+        # print("SCC on {0} samples {1} ± {2}".format(len(SCC_measures), np.round(np.mean(SCC_measures), 3),
+        #                                             np.round(np.std(SCC_measures), 3)))
+        #
+        # print("VIF on {0} samples {1} ± {2}".format(len(VIF_measures), np.round(np.mean(VIF_measures), 3),
+        #                                             np.round(np.std(VIF_measures), 3)))
         print("UIQM on {0} samples {1} ± {2}".format(len(UIQM_measures), np.round(np.mean(UIQM_measures), 3),
                                                      np.round(np.std(UIQM_measures), 3)))
         print("UCIQE on {0} samples {1} ± {2}".format(len(UCIQE_measures), np.round(np.mean(UCIQE_measures), 3),
                                                       np.round(np.std(UCIQE_measures), 3)))
-
